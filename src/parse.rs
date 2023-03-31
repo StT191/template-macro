@@ -30,7 +30,7 @@ fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut Env) -
       TokenTree::Punct(punct) => match punct.as_char() {
 
          // action signifier
-         '$' => match parse_action(punct.span(), input)? {
+         '$' => match parse_action(punct.span(), input, env)? {
 
             Action::Escape(escaped) => output.extend(Some(TokenTree::from(escaped))),
 
@@ -83,13 +83,17 @@ fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
       },
 
       Assign::List(group) => {
-         let stream = group.stream();
+
+         let mut tokens = group.stream().into();
+         let mut stream = TokenStream::new();
+         parse_block(&mut tokens, &mut stream, env)?;
+
          let mut list = Vec::new();
 
          if !stream.is_empty() {
             let mut tokens = stream.into();
 
-            while let Ok(assign) = parse_assign_value(group.span(), &mut tokens) {
+            while let Ok(assign) = parse_assign_value(group.span(), &mut tokens, env) {
 
                let item = parse_assign(assign.span(), assign, env)?;
                list.push(item);
@@ -106,7 +110,11 @@ fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
       },
 
       Assign::Map(group) => {
-         let stream = group.stream();
+
+         let mut tokens = group.stream().into();
+         let mut stream = TokenStream::new();
+         parse_block(&mut tokens, &mut stream, env)?;
+
          let mut map = HashMap::new();
 
          if !stream.is_empty() {
@@ -120,7 +128,7 @@ fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
 
                match_next!(span, tokens, Punct(pt) if pt.as_char() == ':');
 
-               let assign = parse_assign_value(group.span(), &mut tokens)?;
+               let assign = parse_assign_value(group.span(), &mut tokens, env)?;
                let item = parse_assign(assign.span(), assign, env)?;
 
                map.insert(ident, item);
@@ -140,7 +148,7 @@ fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
 }
 
 
-fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env) -> Res<()> {
+pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env) -> Res<()> {
 
    let span = span.join(quote.span()).unwrap();
 

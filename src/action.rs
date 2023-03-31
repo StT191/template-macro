@@ -1,10 +1,10 @@
 
 use proc_macro2::{TokenTree, Punct, Ident, Literal, Group, Span, Delimiter};
 
-use crate::*;
+use crate::{*, env::*, parse::*};
 
 
-pub enum Modifier { None, Concat, First, Last, NotFirst, NotLast }
+pub enum Modifier { Concat, First, Last, NotFirst, NotLast }
 
 pub enum Quote {
    Block(Modifier, Group),
@@ -23,9 +23,9 @@ impl Quote {
 pub enum Assign {
    Ident(Ident),
    Literal(Literal),
-   Map(Group),
-   List(Group),
    Quote(Quote),
+   List(Group),
+   Map(Group),
 }
 
 impl Assign {
@@ -49,7 +49,7 @@ macro_rules! action {
 }
 
 
-pub fn parse_assign_value(mut span: Span, input: &mut TokenIter) -> Res<Assign> {
+pub fn parse_assign_value(mut span: Span, input: &mut TokenIter, env: &mut Env) -> Res<Assign> {
    match next!(span, input) {
 
       TokenTree::Ident(id) => Ok(Assign::Ident(id)),
@@ -57,8 +57,15 @@ pub fn parse_assign_value(mut span: Span, input: &mut TokenIter) -> Res<Assign> 
       TokenTree::Group(gp) if gp.delimiter() == Delimiter::Parenthesis => Ok(Assign::List(gp)),
       TokenTree::Group(gp) if gp.delimiter() == Delimiter::Brace => Ok(Assign::Map(gp)),
 
-      TokenTree::Punct(pt) if pt.as_char() == '$' => match parse_action(span, input)? {
-         Action::Quote(quote) => Ok(Assign::Quote(quote)),
+      TokenTree::Punct(pt) if pt.as_char() == '$' => match parse_action(span, input, env)? {
+
+         Action::Quote(quote) => {
+            let mut collector = TokenStream::new();
+            parse_quote(span, quote, &mut collector, env)?;
+            input.push(collector);
+            parse_assign_value(span, input, env)
+         }
+
          Action::Escape(escape) => err!(escape.span(), "unexpected token"),
          Action::Assign(_, assign) => err!(span.join(assign.span()).unwrap(), "unexpected assignment"),
       },
@@ -68,7 +75,7 @@ pub fn parse_assign_value(mut span: Span, input: &mut TokenIter) -> Res<Assign> 
 }
 
 
-pub fn parse_action(mut span: Span, input: &mut TokenIter) -> Res<Action> {
+pub fn parse_action(mut span: Span, input: &mut TokenIter, env: &mut Env) -> Res<Action> {
 
    match next!(span, input) {
 
@@ -76,7 +83,7 @@ pub fn parse_action(mut span: Span, input: &mut TokenIter) -> Res<Action> {
 
          // assignment
          TokenTree::Punct(punct) if punct.as_char() == '=' => {
-            action!(Assign: ident, parse_assign_value(span, input)?)
+            action!(Assign: ident, parse_assign_value(span, input, env)?)
          },
 
          // modified block quotes
@@ -123,9 +130,6 @@ pub fn parse_action(mut span: Span, input: &mut TokenIter) -> Res<Action> {
 
       // blocks
       TokenTree::Group(gp) => match gp.delimiter() {
-
-         // block quote
-         Delimiter::Brace => action!(Quote: Quote::Block(Modifier::None, gp)),
 
          // var qute
          Delimiter::Parenthesis => action!(Quote: Quote::Item(gp)),
