@@ -8,6 +8,9 @@ type Res<T> = Result<T, (Span, &'static str)>;
 #[macro_use]
 mod macros;
 
+mod token_iter;
+use token_iter::TokenIter;
+
 mod env;
 
 mod action;

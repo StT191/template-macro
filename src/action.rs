@@ -1,8 +1,5 @@
 
-use proc_macro2::{
-   TokenTree, Punct, Ident, Literal, Group, Span, Delimiter,
-   token_stream::{IntoIter as TokenIter},
-};
+use proc_macro2::{TokenTree, Punct, Ident, Literal, Group, Span, Delimiter};
 
 use crate::*;
 

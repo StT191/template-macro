@@ -1,21 +1,18 @@
 
-use proc_macro2::{
-   TokenStream, TokenTree, Group, Span, Ident, Literal,
-   token_stream::{IntoIter as TokenIter},
-};
+use proc_macro2::{TokenStream, TokenTree, Group, Span, Ident, Literal};
 use syn::parse_str;
 use itertools::Either;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::{Res, env::*, action::*};
+use crate::{Res, TokenIter, action::*, env::*};
 
 
 
 pub fn evaluate(input: TokenStream) -> Res<TokenStream> {
 
-   let mut input = input.into_iter();
+   let mut input = input.into();
    let mut output = TokenStream::new();
    let mut scope = Env::new();
 
@@ -53,7 +50,7 @@ fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut Env) -
 
          // parse recursively
          let mut sub_stream = TokenStream::new();
-         parse_block(&mut group.stream().into_iter(), &mut sub_stream, env)?;
+         parse_block(&mut group.stream().into(), &mut sub_stream, env)?;
 
          output.extend(Some(TokenTree::from(
             Group::new(group.delimiter(), sub_stream)
@@ -90,7 +87,7 @@ fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
          let mut list = Vec::new();
 
          if !stream.is_empty() {
-            let mut tokens = stream.into_iter();
+            let mut tokens = stream.into();
 
             while let Ok(assign) = parse_assign_value(group.span(), &mut tokens) {
 
@@ -113,7 +110,7 @@ fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
          let mut map = HashMap::new();
 
          if !stream.is_empty() {
-            let mut tokens = stream.into_iter();
+            let mut tokens: TokenIter = stream.into();
 
             while let Some(token) = tokens.next() {
 
@@ -172,7 +169,7 @@ fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env
          if let Concat = modifier {
 
             let mut collector = TokenStream::new();
-            parse_block(&mut block.stream().into_iter(), &mut collector, env)?;
+            parse_block(&mut block.stream().into(), &mut collector, env)?;
 
             let ident_str = collector.to_string().replace(" ", "");
 
@@ -186,7 +183,7 @@ fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env
             output.extend(Some(TokenTree::from(ident)));
          }
          else {
-            parse_block(&mut block.stream().into_iter(), output, env)?;
+            parse_block(&mut block.stream().into(), output, env)?;
          }
 
          env.pop_scope();
@@ -207,7 +204,7 @@ fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env
                   first: i == 0, last: i == last, index: i, key: key.to_string(), bind: Rc::clone(item),
                }));
 
-               parse_block(&mut block.stream().into_iter(), output, env)?;
+               parse_block(&mut block.stream().into(), output, env)?;
 
                env.pop_scope();
             }
@@ -231,7 +228,7 @@ fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env
                   first: i == 0, last: i == last, index: i, key: i.to_string(), bind: item,
                }));
 
-               parse_block(&mut block.stream().into_iter(), output, env)?;
+               parse_block(&mut block.stream().into(), output, env)?;
 
                env.pop_scope();
             }
