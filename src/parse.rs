@@ -10,31 +10,33 @@ use crate::*;
 
 pub fn evaluate(input: TokenStream) -> Res<TokenStream> {
 
-   let mut input = input.into();
    let mut output = TokenStream::new();
    let mut scope = Env::new();
+   scope.push_scope(None);
 
-   match parse_block(&mut input, &mut output, &mut scope) {
+   match parse_block(input, &mut output, &mut scope) {
       Ok(()) => Ok(output),
       Err(err) => Err(err),
    }
 }
 
 
-pub fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut Env) -> Res<()> {
+pub fn parse_block(input: TokenStream, output: &mut TokenStream, env: &mut Env) -> Res<()> {
+
+   let mut input = TokenIter::from(input);
 
    while let Some(token) = input.next() { match token {
 
       TokenTree::Punct(punct) => match punct.as_char() {
 
          // action signifier
-         '$' => match parse_action(punct.span(), input, env)? {
+         '$' => match parse_action(punct.span(), &mut input, env)? {
 
             Action::Escape(escaped) => output.extend(Some(TokenTree::from(escaped))),
 
-            Action::Assign(ident, assign) => {
-               let item = parse_assign(punct.span(), assign, env)?;
-               env.set_item(ident.to_string(), item);
+            Action::Assign(id, assign) => {
+               let item = parse_assign(assign, env)?;
+               env.set_item(id, item);
             },
 
             Action::Quote(quote) => parse_quote(punct.span(), quote, output, env)?,
@@ -47,12 +49,13 @@ pub fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut En
       TokenTree::Group(group) => {
 
          // parse recursively
-         let mut sub_stream = TokenStream::new();
-         parse_block(&mut group.stream().into(), &mut sub_stream, env)?;
+         let mut collector = TokenStream::new();
+         parse_block(group.stream(), &mut collector, env)?;
 
-         output.extend(Some(TokenTree::from(
-            Group::new(group.delimiter(), sub_stream)
-         )));
+         let mut collect_group = Group::new(group.delimiter(), collector);
+         collect_group.set_span(group.span());
+
+         output.extend(Some(TokenTree::from(collect_group)));
       },
 
       other => output.extend(Some(other)),
@@ -78,7 +81,6 @@ pub fn parse_item_path(item_path: Group, env: &mut Env) -> Res<Rc<Item>> {
       else { break };
 
       span = token.span();
-      // full_span = full_span.join(span).unwrap();
 
       match token {
 
@@ -91,48 +93,28 @@ pub fn parse_item_path(item_path: Group, env: &mut Env) -> Res<Rc<Item>> {
             '@' if item.is_none() && path.len() == 0 => {
 
                needs_segment = false;
+
                let mut id_span = span;
-               let id;
+               let ident = match_next!(id_span, item_path, Ident);
+               span = span.join(id_span).unwrap();
 
-               let get = match item_path.next() {
-                  None => 0,
-                  Some(TokenTree::Ident(ident)) if {
-                     id = ident.to_string();
-                     id == "index" || ident == "key"
-                  } => {
-
-                     if let Some(rest) = item_path.next() {
-                        err!(rest.span(), "unexpected token");
-                     }
-
-                     id_span = id_span.join(ident.span()).unwrap();
-
-                     if id == "index" { 1 } else { 2 }
-                  },
-                  Some(TokenTree::Punct(punct)) if punct.as_char() == '.' => {
-                     needs_segment = true;
-                     span = punct.span();
-                     0
-                  },
-                  Some(token) => err!(token.span(), "unexpected token"),
+               let get = match ident.to_string().as_str() {
+                  "value" => 0, "index" => 1, "key" => 2,
+                  _ => err!(span, "unknown identifier"),
                };
 
                let scope = if let Some(scp) = env.get_iter_scope() { scp }
                else { match get {
-                  0 => err!(id_span, "@ is only available in iterator blocks"),
-                  1 => err!(id_span, "@index is only available in iterator blocks"),
-                  _ => err!(id_span, "@key is only available in iterator blocks"),
+                  0 => err!(span, "@value is only available in iterator blocks"),
+                  1 => err!(span, "@index is only available in iterator blocks"),
+                  _ => err!(span, "@key is only available in iterator blocks"),
                }};
 
-               match get {
-                  0 => item = Some((id_span, Rc::clone(&scope.bind))),
-                  1 => return Ok(
-                     Item::Literal(Literal::usize_unsuffixed(scope.index)).into()
-                  ),
-                  _ => return Ok(
-                     Item::Ident(Ident::new(&scope.key, span)).into()
-                  ),
-               }
+               item = Some((span, match get {
+                  0 => Rc::clone(&scope.value),
+                  1 => Item::Literal(Literal::usize_unsuffixed(scope.index)).into(),
+                  _ => Item::Ident(Ident::new(&scope.key, span)).into(),
+               }));
             },
 
             _ => err!(span, "unexpected token"),

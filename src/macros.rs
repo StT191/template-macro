@@ -38,7 +38,8 @@ macro_rules! match_next {
    ($span:ident, $input:ident, $var:ident) => {
       match_next!($span, $input, $var(_token))
    };
-   ($span:ident, $input:ident, $var:ident($bind:ident) $($if:tt)*) => {
-      match_token!(next!($span, $input), $var($bind) $($if)*)
-   };
+   ($span:ident, $input:ident, $var:ident($bind:ident) $($if:tt)*) => {{
+      let token = next!($span, $input); // can't pass next!(...) directly because of strange errors
+      match_token!(token, $var($bind) $($if)*)
+   }};
 }

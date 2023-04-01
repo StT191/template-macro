@@ -24,7 +24,7 @@ pub struct IterScope {
    pub last: bool,
    pub index: usize,
    pub key: String,
-   pub bind: Rc<Item>,
+   pub value: Rc<Item>,
 }
 
 struct Scope {
@@ -103,7 +103,7 @@ impl Item {
 impl Env {
 
    pub fn new() -> Self {
-      Env(vec![Scope::new(None)])
+      Env(Vec::with_capacity(2))
    }
 
    pub fn push_scope(&mut self, iter_scope: Option<IterScope>) {

@@ -7,20 +7,29 @@ use std::rc::Rc;
 use crate::*;
 
 
-pub enum Modifier { Concat, First, Last, NotFirst, NotLast }
+pub enum BlockModifier { Concat, First, Last, NotFirst, NotLast }
+pub enum ItemModifier { None, Len }
 
 pub enum Quote {
-   Block(Modifier, Group),
+   Block(BlockModifier, Group),
    Iter(Group, Group),
-   Item(Group),
+   Item(ItemModifier, Group),
 }
 
 impl Quote {
-   pub fn span(&self) -> Span {
+   fn span(&self) -> Span {
       match self {
-         Quote::Block(_, blk) => blk.span(), Quote::Iter(_, blk) => blk.span(), Quote::Item(gp) => gp.span()
+         Quote::Block(_, blk) => blk.span(), Quote::Iter(_, blk) => blk.span(), Quote::Item(_, gp) => gp.span()
       }
    }
+}
+
+
+fn parse_scoped_block(input: TokenStream, output: &mut TokenStream, env: &mut Env, iter_scope: Option<IterScope>) -> Res<()> {
+   env.push_scope(iter_scope);
+   let res = parse_block(input, output, env);
+   env.pop_scope();
+   res
 }
 
 
@@ -32,7 +41,7 @@ pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut
 
       Quote::Block(modifier, block) => {
 
-         use Modifier::{First, Last, NotFirst, NotLast, Concat};
+         use BlockModifier::{First, Last, NotFirst, NotLast, Concat};
 
          if matches!(modifier, First | Last | NotFirst | NotLast) {
             if let Some(scope) = env.get_iter_scope() {
@@ -48,18 +57,16 @@ pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut
             }
          }
 
-         env.push_scope(None);
-
          if let Concat = modifier {
 
             let mut collector = TokenStream::new();
-            parse_block(&mut block.stream().into(), &mut collector, env)?;
+            parse_scoped_block(block.stream(), &mut collector, env, None)?;
 
             let ident_str = collector.to_string().replace(" ", "");
 
             let mut ident = match parse_str::<Ident>(&ident_str) {
                Ok(ident) => ident,
-               Err(_) => err!(span, "this doesn't evaluate to a valid identifier"),
+               Err(_) => err!(block.span(), "this doesn't concatenate to an identifier"),
             };
 
             ident.set_span(span);
@@ -67,10 +74,8 @@ pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut
             output.extend(Some(TokenTree::from(ident)));
          }
          else {
-            parse_block(&mut block.stream().into(), output, env)?;
+            parse_scoped_block(block.stream(), output, env, None)?;
          }
-
-         env.pop_scope();
       },
 
       Quote::Iter(path_group, block) => {
@@ -84,13 +89,11 @@ pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut
 
             for (i, (key, item)) in item_iter.enumerate() {
 
-               env.push_scope(Some(IterScope {
-                  first: i == 0, last: i == last, index: i, key: key.to_string(), bind: Rc::clone(item),
-               }));
+               let iter_scope = IterScope {
+                  first: i == 0, last: i == last, index: i, key: key.to_string(), value: Rc::clone(item),
+               };
 
-               parse_block(&mut block.stream().into(), output, env)?;
-
-               env.pop_scope();
+               parse_scoped_block(block.stream(), output, env, Some(iter_scope))?;
             }
          }
          else {
@@ -108,34 +111,50 @@ pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut
 
             for (i, item) in item_iter.enumerate() {
 
-               env.push_scope(Some(IterScope {
-                  first: i == 0, last: i == last, index: i, key: i.to_string(), bind: item,
-               }));
+               let iter_scope = IterScope {
+                  first: i == 0, last: i == last, index: i, key: i.to_string(), value: item,
+               };
 
-               parse_block(&mut block.stream().into(), output, env)?;
-
-               env.pop_scope();
+               parse_scoped_block(block.stream(), output, env, Some(iter_scope))?;
             }
          }
       },
 
-      Quote::Item(path_group) => {
-         match parse_item_path(path_group, env)?.as_ref() {
+      Quote::Item(modifier, path_group) => match modifier {
+
+         ItemModifier::None => match parse_item_path(path_group, env)?.as_ref() {
+
             Item::Ident(ident) => {
                let mut ident = ident.clone();
                ident.set_span(span);
                output.extend(Some(TokenTree::from(ident)));
             },
+
             Item::Literal(literal) => {
                let mut literal = literal.clone();
                literal.set_span(span);
                output.extend(Some(TokenTree::from(literal)));
             },
+
             Item::Stream(stream) => output.extend(stream.clone().into_iter()),
+
             Item::List(_) => err!(span, "can not quote a list item"),
             Item::Map(_) => err!(span, "can not quote a map item"),
-         }
-      },
+         },
+
+         ItemModifier::Len => {
+
+            let len = match parse_item_path(path_group, env)?.as_ref() {
+               Item::Ident(_) | Item::Literal(_) | Item::Stream(_) => 1,
+               Item::List(list) => list.len(),
+               Item::Map(map) => map.len(),
+            };
+
+            let mut literal = Literal::usize_unsuffixed(len);
+            literal.set_span(span);
+            output.extend(Some(TokenTree::from(literal)));
+         },
+      }
    }
 
    Ok(())

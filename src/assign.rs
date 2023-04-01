@@ -1,5 +1,5 @@
 
-use proc_macro2::{TokenTree, Ident, Literal, Group, Span, Delimiter};
+use proc_macro2::{TokenTree, Ident, Literal, Group, Span, Delimiter::{Parenthesis, Brace}};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -9,28 +9,48 @@ use crate::*;
 pub enum Assign {
    Ident(Ident),
    Literal(Literal),
-   Quote(Quote),
+   Stream(Group),
+   Item(Group),
    List(Group),
    Map(Group),
 }
 
 impl Assign {
-   pub fn span(&self) -> Span {
+   fn span(&self) -> Span {
       match self {
-         Assign::Ident(tk) => tk.span(), Assign::Literal(tk) => tk.span(), Assign::Map(tk) => tk.span(),
-         Assign::List(tk) => tk.span(), Assign::Quote(tk) => tk.span(),
+         Assign::Ident(tk) => tk.span(), Assign::Literal(tk) => tk.span(),
+         Assign::Stream(gp) | Assign::Item(gp) | Assign::List(gp) | Assign::Map(gp) => gp.span(),
       }
    }
 }
 
 
 pub fn parse_assign_value(mut span: Span, input: &mut TokenIter, env: &mut Env) -> Res<Assign> {
-   match next!(span, input) {
+   Ok(match next!(span, input) {
 
-      TokenTree::Ident(id) => Ok(Assign::Ident(id)),
-      TokenTree::Literal(lt) => Ok(Assign::Literal(lt)),
-      TokenTree::Group(gp) if gp.delimiter() == Delimiter::Parenthesis => Ok(Assign::List(gp)),
-      TokenTree::Group(gp) if gp.delimiter() == Delimiter::Brace => Ok(Assign::Map(gp)),
+      TokenTree::Ident(id) => Assign::Ident(id),
+      TokenTree::Literal(lt) => Assign::Literal(lt),
+      TokenTree::Group(gp) if gp.delimiter() == Parenthesis => Assign::List(gp),
+
+      TokenTree::Group(gp) if gp.delimiter() == Brace => {
+         let mut tokens = gp.stream().into_iter();
+         match next!(span, tokens) {
+            // quoted tokenstream
+            TokenTree::Group(mut blk) if blk.delimiter() == Brace => match tokens.next() {
+               None => {
+                  blk.set_span(span);
+                  Assign::Stream(blk)
+               },
+               Some(tk) => err!(tk.span(), "unexpected token"),
+            },
+            // map
+            _ => Assign::Map(gp),
+         }
+      },
+
+      TokenTree::Punct(pt) if pt.as_char() == '@' => Assign::Item(
+         match_next!(span, input, Group(gp) if gp.delimiter() == Parenthesis)
+      ),
 
       TokenTree::Punct(pt) if pt.as_char() == '$' => match parse_action(span, input, env)? {
 
@@ -38,7 +58,7 @@ pub fn parse_assign_value(mut span: Span, input: &mut TokenIter, env: &mut Env) 
             let mut collector = TokenStream::new();
             parse_quote(span, quote, &mut collector, env)?;
             input.push_in_front(collector);
-            parse_assign_value(span, input, env)
+            parse_assign_value(span, input, env)?
          }
 
          Action::Escape(escape) => err!(escape.span(), "unexpected token"),
@@ -46,33 +66,37 @@ pub fn parse_assign_value(mut span: Span, input: &mut TokenIter, env: &mut Env) 
       },
 
       _ => err!(span, "unexpected token"),
-   }
+   })
 }
 
 
-pub fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
+
+fn evaluate_scoped_block(input: TokenStream, env: &mut Env) -> Res<TokenStream> {
+   let mut output = TokenStream::new();
+   env.push_scope(None);
+   let res = parse_block(input, &mut output, env);
+   env.pop_scope();
+   res.and(Ok(output))
+}
+
+
+pub fn parse_assign(assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
    Ok(match assign {
 
       Assign::Ident(ident) => Item::Ident(ident).into(),
 
       Assign::Literal(lit) => Item::Literal(lit).into(),
 
-      Assign::Quote(quote) => match quote {
-
-         Quote::Item(group) => parse_item_path(group, env)?,
-
-         _ => {
-            let mut collector = TokenStream::new();
-            parse_quote(span, quote, &mut collector, env)?;
-            Item::Stream(collector).into()
-         },
+      Assign::Stream(group) => {
+         let collector = evaluate_scoped_block(group.stream(), env)?;
+         Item::Stream(collector).into()
       },
+
+      Assign::Item(group) => parse_item_path(group, env)?,
 
       Assign::List(group) => {
 
-         let mut tokens = group.stream().into();
-         let mut stream = TokenStream::new();
-         parse_block(&mut tokens, &mut stream, env)?;
+         let stream = evaluate_scoped_block(group.stream(), env)?;
 
          let mut list = Vec::new();
 
@@ -81,7 +105,7 @@ pub fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> 
 
             while let Ok(assign) = parse_assign_value(group.span(), &mut tokens, env) {
 
-               let item = parse_assign(assign.span(), assign, env)?;
+               let item = parse_assign(assign, env)?;
                list.push(item);
 
                match tokens.next() {
@@ -97,9 +121,7 @@ pub fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> 
 
       Assign::Map(group) => {
 
-         let mut tokens = group.stream().into();
-         let mut stream = TokenStream::new();
-         parse_block(&mut tokens, &mut stream, env)?;
+         let stream = evaluate_scoped_block(group.stream(), env)?;
 
          let mut map = HashMap::new();
 
@@ -115,7 +137,7 @@ pub fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> 
                match_next!(span, tokens, Punct(pt) if pt.as_char() == ':');
 
                let assign = parse_assign_value(group.span(), &mut tokens, env)?;
-               let item = parse_assign(assign.span(), assign, env)?;
+               let item = parse_assign(assign, env)?;
 
                map.insert(ident, item);
 
