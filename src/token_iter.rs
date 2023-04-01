@@ -6,17 +6,15 @@ pub struct TokenIter {
 }
 
 impl TokenIter {
-   pub fn push(&mut self, tokens: impl Into<TokenStream>) {
+   pub fn push_in_front(&mut self, tokens: impl Into<TokenStream>) {
       self.iters.push(tokens.into().into_iter());
    }
 }
 
-impl From<IntoIter> for TokenIter {
-   fn from(tokens: IntoIter) -> Self { Self { iters: vec![tokens] } }
-}
-
 impl From<TokenStream> for TokenIter {
-   fn from(tokens: TokenStream) -> Self { Self::from(tokens.into_iter()) }
+   fn from(tokens: TokenStream) -> Self {
+      Self { iters: vec![tokens.into_iter()] }
+   }
 }
 
 

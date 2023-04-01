@@ -1,12 +1,10 @@
 
-use proc_macro2::{TokenStream, TokenTree, Group, Span, Ident, Literal};
-use syn::parse_str;
-use itertools::Either;
-use std::collections::HashMap;
+use proc_macro2::{TokenStream, TokenTree, Group, Ident, Literal};
+
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::{Res, TokenIter, action::*, env::*};
+use crate::*;
 
 
 
@@ -23,7 +21,7 @@ pub fn evaluate(input: TokenStream) -> Res<TokenStream> {
 }
 
 
-fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut Env) -> Res<()> {
+pub fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut Env) -> Res<()> {
 
    while let Some(token) = input.next() { match token {
 
@@ -64,209 +62,7 @@ fn parse_block(input: &mut TokenIter, output: &mut TokenStream, env: &mut Env) -
 }
 
 
-fn parse_assign(span: Span, assign: Assign, env: &mut Env) -> Res<Rc<Item>> {
-   Ok(match assign {
-
-      Assign::Ident(ident) => Item::Ident(ident).into(),
-
-      Assign::Literal(lit) => Item::Literal(lit).into(),
-
-      Assign::Quote(quote) => match quote {
-
-         Quote::Item(group) => parse_item_path(group, env)?,
-
-         _ => {
-            let mut collector = TokenStream::new();
-            parse_quote(span, quote, &mut collector, env)?;
-            Item::Stream(collector).into()
-         },
-      },
-
-      Assign::List(group) => {
-
-         let mut tokens = group.stream().into();
-         let mut stream = TokenStream::new();
-         parse_block(&mut tokens, &mut stream, env)?;
-
-         let mut list = Vec::new();
-
-         if !stream.is_empty() {
-            let mut tokens = stream.into();
-
-            while let Ok(assign) = parse_assign_value(group.span(), &mut tokens, env) {
-
-               let item = parse_assign(assign.span(), assign, env)?;
-               list.push(item);
-
-               match tokens.next() {
-                  None => break,
-                  Some(TokenTree::Punct(pt)) if pt.as_char() == ',' => continue,
-                  Some(other) => err!(other.span(), "unexpected token"),
-               }
-            }
-         }
-
-         Item::List(list).into()
-      },
-
-      Assign::Map(group) => {
-
-         let mut tokens = group.stream().into();
-         let mut stream = TokenStream::new();
-         parse_block(&mut tokens, &mut stream, env)?;
-
-         let mut map = HashMap::new();
-
-         if !stream.is_empty() {
-            let mut tokens: TokenIter = stream.into();
-
-            while let Some(token) = tokens.next() {
-
-               let mut span = token.span();
-
-               let ident = match_token!(token, Ident).to_string();
-
-               match_next!(span, tokens, Punct(pt) if pt.as_char() == ':');
-
-               let assign = parse_assign_value(group.span(), &mut tokens, env)?;
-               let item = parse_assign(assign.span(), assign, env)?;
-
-               map.insert(ident, item);
-
-               match tokens.next() {
-                  None => break,
-                  Some(TokenTree::Punct(pt)) if pt.as_char() == ',' => continue,
-                  Some(other) => err!(other.span(), "unexpected token"),
-               }
-            }
-         }
-
-         Item::Map(map).into()
-      },
-
-   })
-}
-
-
-pub fn parse_quote(span: Span, quote: Quote, output: &mut TokenStream, env: &mut Env) -> Res<()> {
-
-   let span = span.join(quote.span()).unwrap();
-
-   match quote {
-
-      Quote::Block(modifier, block) => {
-
-         use Modifier::{First, Last, NotFirst, NotLast, Concat};
-
-         if matches!(modifier, First | Last | NotFirst | NotLast) {
-            if let Some(scope) = env.get_iter_scope() {
-               match modifier {
-                  First => if !scope.first { return Ok(()) },
-                  NotFirst => if scope.first { return Ok(()) },
-                  Last => if !scope.last { return Ok(()) },
-                  NotLast => if scope.last { return Ok(()) },
-                  _ => unreachable!(),
-               }
-            } else if matches!(modifier, NotFirst | NotLast) {
-               return Ok(());
-            }
-         }
-
-         env.push_scope(None);
-
-         if let Concat = modifier {
-
-            let mut collector = TokenStream::new();
-            parse_block(&mut block.stream().into(), &mut collector, env)?;
-
-            let ident_str = collector.to_string().replace(" ", "");
-
-            let mut ident = match parse_str::<Ident>(&ident_str) {
-               Ok(ident) => ident,
-               Err(_) => err!(span, "this doesn't evaluate to a valid identifier"),
-            };
-
-            ident.set_span(span);
-
-            output.extend(Some(TokenTree::from(ident)));
-         }
-         else {
-            parse_block(&mut block.stream().into(), output, env)?;
-         }
-
-         env.pop_scope();
-      },
-
-      Quote::Iter(path_group, block) => {
-
-         let item = parse_item_path(path_group, env)?;
-
-         if let Item::Map(map) = item.as_ref() {
-
-            let item_iter = map.iter();
-            let last = item_iter.len() - 1;
-
-            for (i, (key, item)) in item_iter.enumerate() {
-
-               env.push_scope(Some(IterScope {
-                  first: i == 0, last: i == last, index: i, key: key.to_string(), bind: Rc::clone(item),
-               }));
-
-               parse_block(&mut block.stream().into(), output, env)?;
-
-               env.pop_scope();
-            }
-         }
-         else {
-
-            let item_iter = match item.as_ref() {
-               Item::Ident(_) | Item::Literal(_) | Item::Stream(_) => {
-                  Either::Left([Rc::clone(&item)].into_iter())
-               },
-               Item::List(list) => {
-                  Either::Right(list.iter().cloned())
-               },
-               _ => unreachable!(),
-            };
-            let last = item_iter.len() - 1;
-
-            for (i, item) in item_iter.enumerate() {
-
-               env.push_scope(Some(IterScope {
-                  first: i == 0, last: i == last, index: i, key: i.to_string(), bind: item,
-               }));
-
-               parse_block(&mut block.stream().into(), output, env)?;
-
-               env.pop_scope();
-            }
-         }
-      },
-
-      Quote::Item(path_group) => {
-         match parse_item_path(path_group, env)?.as_ref() {
-            Item::Ident(ident) => {
-               let mut ident = ident.clone();
-               ident.set_span(span);
-               output.extend(Some(TokenTree::from(ident)));
-            },
-            Item::Literal(literal) => {
-               let mut literal = literal.clone();
-               literal.set_span(span);
-               output.extend(Some(TokenTree::from(literal)));
-            },
-            Item::Stream(stream) => output.extend(stream.clone().into_iter()),
-            Item::List(_) => err!(span, "can not quote a list item"),
-            Item::Map(_) => err!(span, "can not quote a map item"),
-         }
-      },
-   }
-
-   Ok(())
-}
-
-
-fn parse_item_path(item_path: Group, env: &mut Env) -> Res<Rc<Item>> {
+pub fn parse_item_path(item_path: Group, env: &mut Env) -> Res<Rc<Item>> {
 
    // let full_span = item_path.span();
    let mut span = item_path.span();

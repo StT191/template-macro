@@ -1,22 +1,16 @@
 
 // mods
 
-use proc_macro2::Span;
-
-type Res<T> = Result<T, (Span, &'static str)>;
+type Res<T> = Result<T, (proc_macro2::Span, &'static str)>;
 
 #[macro_use]
 mod macros;
-
-mod token_iter;
-use token_iter::TokenIter;
-
-mod env;
-
-mod action;
-
-mod parse;
-use parse::evaluate;
+mod token_iter;   use token_iter::*;
+mod env;          use env::*;
+mod quotes;       use quotes::*;
+mod assign;       use assign::*;
+mod action;       use action::*;
+mod parse;        use parse::*;
 
 
 // exports
