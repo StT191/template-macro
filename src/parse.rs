@@ -65,6 +65,8 @@ pub fn parse_block(input: TokenStream, output: &mut TokenStream, env: &mut Env) 
 }
 
 
+enum Ac { Value, Index, Key } // accessor
+
 pub fn parse_item_path(item_path: Group, env: &mut Env) -> Res<Rc<Item>> {
 
    // let full_span = item_path.span();
@@ -99,21 +101,21 @@ pub fn parse_item_path(item_path: Group, env: &mut Env) -> Res<Rc<Item>> {
                span = span.join(id_span).unwrap();
 
                let get = match ident.to_string().as_str() {
-                  "value" => 0, "index" => 1, "key" => 2,
+                  "value" => Ac::Value, "index" => Ac::Index, "key" => Ac::Key,
                   _ => err!(span, "unknown identifier"),
                };
 
                let scope = if let Some(scp) = env.get_iter_scope() { scp }
                else { match get {
-                  0 => err!(span, "@value is only available in iterator blocks"),
-                  1 => err!(span, "@index is only available in iterator blocks"),
-                  _ => err!(span, "@key is only available in iterator blocks"),
+                  Ac::Value => err!(span, "@value is only available in iterator blocks"),
+                  Ac::Index => err!(span, "@index is only available in iterator blocks"),
+                  Ac::Key => err!(span, "@key is only available in iterator blocks"),
                }};
 
                item = Some((span, match get {
-                  0 => Rc::clone(&scope.value),
-                  1 => Item::Literal(Literal::usize_unsuffixed(scope.index)).into(),
-                  _ => Item::Ident(Ident::new(&scope.key, span)).into(),
+                  Ac::Value => Rc::clone(&scope.value),
+                  Ac::Index => Item::Literal(Literal::usize_unsuffixed(scope.index)).into(),
+                  Ac::Key => Item::Ident(Ident::new(&scope.key, span)).into(),
                }));
             },
 
